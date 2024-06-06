@@ -57,9 +57,27 @@ def join_custom(room_id):
     print(f"Entered room ID: {room_id}")
 
     room_input.send_keys('\n') 
-    
+
+def apply_config():
+
+    config_button = WebDriverWait(driver, 10).until(
+        EC.element_to_be_clickable((By.ID, "sig_config"))
+    )
+    config_button.click()
+    print("CONFIG button clicked.")
+
+    handling_button = WebDriverWait(driver, 10).until(
+        EC.element_to_be_clickable((By.XPATH, "//h1[@title='Change the way TETR.IO feels']"))
+    )
+    handling_button.click()
+    print("HANDLING button clicked.")
+
+
+
+
+
 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
 open_tetrio()
-join_custom("psfz")
+apply_config()
 time.sleep(60)
 driver.quit()
