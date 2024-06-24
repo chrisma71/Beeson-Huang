@@ -73,6 +73,7 @@ class Tetris:
         self.screen = pygame.display.set_mode((TOTAL_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("Tetris")
         self.clock = pygame.time.Clock()
+        self.font = pygame.font.SysFont(None, 24)  # Font for rendering text
         self.reset_game()
 
     def reset_game(self):
@@ -84,6 +85,7 @@ class Tetris:
         self.hold_used = False
         self.upcoming_shapes = [self.new_shape() for _ in range(5)]
         self.rotation_state = 0  # Add rotation state
+        self.perform_best_move()
 
     def generate_bag(self):
         bag = SHAPES[:]
@@ -93,12 +95,29 @@ class Tetris:
     def new_shape(self):
         if not self.bag:
             self.bag = self.generate_bag()
-        return copy.deepcopy(self.bag.pop())
+        shape = copy.deepcopy(self.bag.pop())
+        return shape
+
+    def next_shape(self):
+        self.current_shape = self.upcoming_shapes.pop(0)
+        self.upcoming_shapes.append(self.new_shape())
+        self.shape_position = [0, (SCREEN_WIDTH // GRID_SIZE) // 2 - 2]  # Reset position
+        self.rotation_state = 0  # Reset rotation
 
     def draw_grid(self):
         for y in range(0, SCREEN_HEIGHT, GRID_SIZE):
             for x in range(PANEL_WIDTH, SCREEN_WIDTH + PANEL_WIDTH, GRID_SIZE):
                 pygame.draw.rect(self.screen, WHITE, (x, y, GRID_SIZE, GRID_SIZE), 1)
+                
+                # Draw y-axis labels
+                if x == PANEL_WIDTH:
+                    label = self.font.render(f"{y // GRID_SIZE}", True, WHITE)
+                    self.screen.blit(label, (x - GRID_SIZE, y + GRID_SIZE // 4))
+                    
+                # Draw x-axis labels
+                if y == 0:
+                    label = self.font.render(f"{(x - PANEL_WIDTH) // GRID_SIZE}", True, WHITE)
+                    self.screen.blit(label, (x + GRID_SIZE // 4, y - GRID_SIZE))
 
     def draw_shape(self, shape_info, position):
         shape, color = shape_info['shape'], shape_info['color']
@@ -151,11 +170,10 @@ class Tetris:
             if dy == 1:  # If collision happened while moving down
                 self.lock_shape()
                 self.clear_lines()
-                self.current_shape = self.upcoming_shapes.pop(0)
-                self.upcoming_shapes.append(self.new_shape())
-                self.shape_position = [0, (SCREEN_WIDTH // GRID_SIZE) // 2 - 2]
+                self.next_shape()
                 self.hold_used = False
                 self.rotation_state = 0  # Reset rotation state
+                self.perform_best_move()
 
     def rotate_shape(self, direction):
         original_shape = copy.deepcopy(self.current_shape['shape'])
@@ -195,11 +213,10 @@ class Tetris:
         self.shape_position[0] -= 1
         self.lock_shape()
         self.clear_lines()
-        self.current_shape = self.upcoming_shapes.pop(0)
-        self.upcoming_shapes.append(self.new_shape())
-        self.shape_position = [0, (SCREEN_WIDTH // GRID_SIZE) // 2 - 2]
+        self.next_shape()
         self.hold_used = False
         self.rotation_state = 0  # Reset rotation state
+        self.perform_best_move()
 
     def hold_piece(self):
         if not self.hold_used:
@@ -207,12 +224,13 @@ class Tetris:
                 self.current_shape, self.hold_shape = self.hold_shape, copy.deepcopy(self.current_shape)
                 self.shape_position = [0, (SCREEN_WIDTH // GRID_SIZE) // 2 - 2]
                 self.rotation_state = 0  # Reset rotation state
+                self.perform_best_move()
             else:
                 self.hold_shape = copy.deepcopy(self.current_shape)
-                self.current_shape = self.upcoming_shapes.pop(0)
-                self.upcoming_shapes.append(self.new_shape())
+                self.next_shape()
                 self.shape_position = [0, (SCREEN_WIDTH // GRID_SIZE) // 2 - 2]
                 self.rotation_state = 0  # Reset rotation state
+                self.perform_best_move()
             self.hold_used = True
 
     def check_collision(self):
@@ -240,6 +258,191 @@ class Tetris:
         lines_cleared = len(self.grid) - len(new_grid)
         new_grid = [[0] * (SCREEN_WIDTH // GRID_SIZE) for _ in range(lines_cleared)] + new_grid
         self.grid = new_grid
+
+    def evaluate_board(self, grid):
+        score = 0
+        
+        # Count the number of holes
+        holes = 0
+        holes_by_column = [0] * len(grid[0])
+        for col in range(len(grid[0])):
+            block_found = False
+            for row in range(len(grid)):
+                if grid[row][col] != 0:
+                    block_found = True
+                elif block_found:
+                    holes += 1
+                    holes_by_column[col] += 1
+        
+        # Calculate the height of the stack
+        stack_height = max([row for row in range(len(grid)) if any(grid[row])], default=-1) + 1
+        
+        # Calculate the aggregate height
+        aggregate_height = sum(next((len(grid) - row for row in range(len(grid)) if grid[row][col]), 0) for col in range(len(grid[0])))
+        
+        # Calculate the bumpiness
+        bumpiness = sum(abs(
+            next((len(grid) - row for row in range(len(grid)) if grid[row][col]), 0) - 
+            next((len(grid) - row for row in range(len(grid)) if grid[row][col+1]), 0)
+        ) for col in range(len(grid[0]) - 1))
+        
+        # Calculate the number of complete lines
+        complete_lines = sum(all(grid[row][col] != 0 for col in range(len(grid[0]))) for row in range(len(grid)))
+        
+        # Calculate the line clear potential
+        line_clear_potential = 0
+        for row in range(len(grid)):
+            if all(grid[row][col] != 0 for col in range(len(grid[0]))):
+                line_clear_potential += 1
+        
+        # Calculate the landing height of the piece
+        landing_height = stack_height - self.shape_position[0]
+
+        # Calculate the number of wells
+        wells = 0
+        for col in range(1, len(grid[0]) - 1):
+            if all(grid[row][col] == 0 and grid[row][col - 1] != 0 and grid[row][col + 1] != 0 for row in range(len(grid))):
+                wells += 1
+        
+        # Assign weights to each metric
+        score -= holes * 20
+        score -= stack_height * 2
+        score -= aggregate_height * 1
+        score -= bumpiness * 1
+        score -= (wells - 1) * 100  # Penalty for more than one well
+        score += complete_lines * 1  # Increased weight for complete lines
+        score += line_clear_potential * 50  # Reward for potential future line clears
+        score += landing_height * 2  # Reward for lower landing height
+        
+        # Extra bonus for clearing multiple lines at once
+        if complete_lines == 4:
+            score += 1000  # Extra bonus for a Tetris (clearing four lines at once)
+        elif complete_lines == 3:
+            score += 3  # Extra bonus for clearing three lines at once
+        elif complete_lines == 2:
+            score += 1  # Extra bonus for clearing two lines at once
+        
+        return score
+
+
+
+
+    def simulate_move(self, shape, position):
+        new_grid = copy.deepcopy(self.grid)
+        shape_x, shape_y = position
+        shape_matrix = shape['shape']
+        for y, row in enumerate(shape_matrix):
+            for x, cell in enumerate(row):
+                if cell:
+                    new_grid[shape_y + y][shape_x + x] = {'shape': cell, 'color': shape['color']}
+        return new_grid
+
+    def evaluate_move(self, shape, position):
+        new_grid = self.simulate_move(shape, position)
+        return self.evaluate_board(new_grid)
+
+    def select_best_move(self):
+        possible_moves = []
+        for rotation in range(4):
+            new_shape = copy.deepcopy(self.current_shape)
+            for _ in range(rotation):
+                new_shape['shape'] = [list(row) for row in zip(*new_shape['shape'][::-1])]
+            for col in range(len(self.grid[0]) - len(new_shape['shape'][0]) + 1):
+                position = (col, 0)
+                while not self.check_collision_at_position(new_shape['shape'], position):
+                    position = (position[0], position[1] + 1)
+                position = (position[0], position[1] - 1)
+                if position[1] >= 0:  # Ensure it's within the grid
+                    possible_moves.append((copy.deepcopy(new_shape), position, rotation))
+        
+        best_score = float('-inf')
+        best_move = None
+        for shape, position, rotation in possible_moves:
+            score = self.evaluate_move(shape, position)
+            if score > best_score:
+                best_score = score
+                best_move = (shape, position, rotation)
+        
+        return best_move
+
+    def check_collision_at_position(self, shape, position):
+        shape_x, shape_y = position
+        for y, row in enumerate(shape):
+            for x, cell in enumerate(row):
+                if cell:
+                    if (shape_y + y >= len(self.grid) or
+                            shape_x + x < 0 or
+                            shape_x + x >= len(self.grid[0]) or
+                            self.grid[shape_y + y][shape_x + x]):
+                        return True
+        return False
+
+    def perform_best_move(self):
+        best_move = self.select_best_move()
+        
+        if self.hold_shape:
+            # Evaluate the current best move
+            best_move_score = float('-inf')
+            if best_move:
+                best_shape, best_position, best_rotation = best_move
+                best_move_score = self.evaluate_move(best_shape, best_position)
+            
+            # Evaluate the best move if holding the piece
+            original_shape = copy.deepcopy(self.current_shape)
+            self.current_shape, self.hold_shape = self.hold_shape, original_shape
+            self.shape_position = [0, (SCREEN_WIDTH // GRID_SIZE) // 2 - 2]
+            hold_best_move = self.select_best_move()
+            hold_best_move_score = float('-inf')
+            if hold_best_move:
+                hold_shape, hold_position, hold_rotation = hold_best_move
+                hold_best_move_score = self.evaluate_move(hold_shape, hold_position)
+            
+            # Compare the best move and hold best move
+            if hold_best_move_score > best_move_score:
+                self.perform_hold()
+                best_move = hold_best_move
+        
+        if best_move:
+            shape, position, rotation = best_move
+            shape_name = shape['name']
+            position_x, position_y = position
+            print(f"Performing best move for shape {shape_name}: Position ({position_x}, {position_y}) with rotation {rotation}")
+            for _ in range(rotation):
+                self.rotate_shape("clockwise")
+                self.update_display_with_delay()
+            self.shape_position = [position_y, position_x]
+            self.update_display_with_delay()
+            self.hard_drop_with_delay()
+        else:
+            print("No valid moves found.")
+
+    def perform_hold(self):
+        self.hold_piece()
+        self.perform_best_move()
+
+    def update_display_with_delay(self):
+        self.screen.fill(BLACK)
+        pygame.draw.rect(self.screen, GREY, (0, 0, PANEL_WIDTH, SCREEN_HEIGHT))  # Left panel
+        pygame.draw.rect(self.screen, GREY, (SCREEN_WIDTH + PANEL_WIDTH, 0, PANEL_WIDTH, SCREEN_HEIGHT))  # Right panel
+        self.draw_grid()
+        self.draw_shape(self.current_shape, self.shape_position)
+        self.draw_locked_shapes()
+        self.draw_hold_shape()
+        self.draw_upcoming_shapes()
+        pygame.display.flip()
+        pygame.time.wait(10)  # Delay of 200 milliseconds
+
+    def hard_drop_with_delay(self):
+        while not self.check_collision():
+            self.shape_position[0] += 1
+            self.update_display_with_delay()
+        self.shape_position[0] -= 1
+        self.lock_shape()
+        self.clear_lines()
+        self.next_shape()
+        self.hold_used = False
+        self.rotation_state = 0  # Reset rotation state
+        self.perform_best_move()
 
     def run(self):
         running = True
